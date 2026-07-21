@@ -24,9 +24,8 @@
 - **원격(`origin`)**: 스크립트는 `git push -u origin "$BRANCH"`만 하고 `git remote add`는 하지
   않습니다. 따라서 `/home/user/data`의 `origin`이 반드시 `haechyaning-commits/data`를
   가리켜야 합니다.
-- **브랜치(하드코딩)**: `orchestrate2.sh` / `flush_chunks.sh`의 `BRANCH`는
-  `claude/code-startup-error-ol0g7y`로 박혀 있습니다. **다른 브랜치(예: `main`)로 밀려면
-  스크립트 상단의 `BRANCH` 값을 바꾸세요.**
+- **브랜치(하드코딩)**: `orchestrate2.sh` / `flush_chunks.sh`의 `BRANCH`는 `main`으로
+  설정돼 있습니다. **다른 브랜치로 밀려면 스크립트 상단의 `BRANCH` 값을 바꾸세요.**
 
 준비 예시:
 

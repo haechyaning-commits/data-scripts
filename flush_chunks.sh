@@ -5,7 +5,7 @@
 # batch commit first (files stay on disk), then re-commits chunk by chunk.
 set -u
 cd /home/user/data
-BRANCH=claude/code-startup-error-ol0g7y
+BRANCH=main
 CHUNK_BYTES=${CHUNK_BYTES:-400000000}
 OUT=자체감사파일2
 

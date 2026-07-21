@@ -4,7 +4,7 @@
 # done2.log is committed with every batch, so a fresh container can resume.
 set -u
 cd /home/user/data
-BRANCH=claude/code-startup-error-ol0g7y
+BRANCH=main
 SCRIPTS=/home/user/data/_scripts
 OUT=자체감사파일2
 BATCH_BYTES=${BATCH_BYTES:-400000000}
