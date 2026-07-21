@@ -125,4 +125,8 @@ async function main() {
   if (failures > 0 && batch.length === failures) process.exit(2); // no progress at all
 }
 
-main().catch((e) => { log('FATAL: ' + e.stack); process.exit(1); });
+// Force a clean exit once work is done: lingering keep-alive sockets from the
+// proxy tunnel can keep the event loop alive and hang the process after main()
+// resolves, which would block the orchestrator waiting on this call. All state
+// writes above are synchronous, so exiting here loses nothing.
+main().then(() => process.exit(0)).catch((e) => { log('FATAL: ' + e.stack); process.exit(1); });
