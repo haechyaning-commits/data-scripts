@@ -25,8 +25,10 @@ async function buildInstLookup(){
 function csvCell(v){ v=(v==null?'':String(v)); return '"'+v.replace(/"/g,'""')+'"'; }
 
 const RANGES = [
+  { folder:'자체감사파일1', bgng:'20160101', end:'20201231' },
   { folder:'자체감사파일2', bgng:'20210101', end:'20250706' },
-  { folder:'자체감사결과',   bgng:'20250707', end:'20260707' },
+  { folder:'자체감사파일3', bgng:'20250707', end:'20260707' },
+  { folder:'자체감사파일4', bgng:'20260708', end:'20260731' },
 ];
 
 function pLimit(n){let a=0;const q=[];const nx=()=>{if(a>=n||!q.length)return;a++;const{fn,res,rej}=q.shift();fn().then(res,rej).finally(()=>{a--;nx();});};return fn=>new Promise((res,rej)=>{q.push({fn,res,rej});nx();});}

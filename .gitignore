@@ -21,6 +21,13 @@ catalog.csv
 # 배치별 저장 파일 목록(orchestrate3.sh가 targeted git add에 사용, 매 배치 재생성)
 batch_files.txt
 
+# 대시보드 빌드 산출물/입력(코드 아님, 결과물은 data 저장소로 감)
+filelist.json
+감사_통합대시보드.html
+카탈로그_보고서목록_new.csv
+카탈로그_보고서목록.csv
+감사지적_마스터인덱스.csv
+
 # 로그
 progress.log
 incremental.log

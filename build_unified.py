@@ -1,22 +1,26 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""공공감사 통합 대시보드 생성기.
+"""공공감사 통합 대시보드 생성기 (자체감사파일1~4 전체 반영판).
    입력:
-     - 감사지적_마스터인덱스.csv  (자체감사결과 10,830 파일, 본문에서 뽑은 지적제목·처분키워드)
-     - 카탈로그_보고서목록.csv     (두 폴더 15,898 보고서, 포털 API 공식 처분종류·모범사례)
-   출력: 감사_통합대시보드.html  (자기완결형, 탭: 현황·지적탐색·보고서탐색·기관프로파일·모범사례·벤치마크)
-   원칙: 지적제목=본문추출(자체감사결과), 처분·모범사례·집계=공식 API값(보고서목록).
+     - 감사지적_마스터인덱스.csv   (자체감사파일3 문서 본문에서 뽑은 지적제목·처분키워드)
+     - 카탈로그_보고서목록_new.csv  (자체감사파일1~4 포털 API 공식 처분종류·모범사례)
+     - filelist.json               (자체감사파일1~4 전체 첨부파일, 분할 .part 조각은 원본으로 묶음)
+   출력: 감사_통합대시보드.html (자기완결형)
+   원칙: 데이터셋 통합(기본 전체) + 출처 컬럼, 파일은 전부 목록으로, 분할 조각은 원본으로 묶어 표시.
 """
 import csv, os, json, html
-from collections import Counter, defaultdict
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.abspath(__file__))
 IDX = os.path.join(ROOT, "감사지적_마스터인덱스.csv")
-REP = "/tmp/claude-0/-home-user-data/bb83659f-d124-5afc-a049-316386e196b5/scratchpad/카탈로그_보고서목록.csv"
-# 전체 첨부파일 목록(자체감사결과 r1 / 자체감사파일2 r2). git ls-tree 로 생성:
-#   git ls-tree --name-only <main> 자체감사결과/ , 자체감사파일2/
-FILELIST = "/tmp/claude-0/-home-user-data/bb83659f-d124-5afc-a049-316386e196b5/scratchpad/filelist.json"
+REP = os.path.join(ROOT, "카탈로그_보고서목록_new.csv")
+FILELIST = os.path.join(ROOT, "filelist.json")
 OUT = os.path.join(ROOT, "감사_통합대시보드.html")
+
+# 기간 오름차순 폴더 + 라벨
+FOLDERS = ["자체감사파일1", "자체감사파일2", "자체감사파일3", "자체감사파일4"]
+PERIOD = {"자체감사파일1": "2016~2020", "자체감사파일2": "2021~2025",
+          "자체감사파일3": "2025~2026", "자체감사파일4": "2026.7~"}
+FINDINGS_FOLDER = "자체감사파일3"  # 본문 지적 색인은 파일3(구 자체감사결과) 기준
 
 DISPO_CHIPS = ["주의", "통보-일반", "개선요구", "시정(기타)", "회수", "권고",
                "징계·문책요구", "경고", "현지주의", "현지시정", "환수", "고발"]
@@ -54,10 +58,12 @@ def load():
     for r in csv.DictReader(open(REP, encoding="utf-8-sig")):
         reports.append([r["폴더"], r["기관"], r["연도"], r["감사분야"], r["감사사항명"],
                         r["처분종류"], r["모범사례포함"], r["조치사항수"], r["파일명패턴"]])
-    return findings, reports
+    fl = json.load(open(FILELIST, encoding="utf-8"))
+    return findings, reports, fl
 
 
 def benchmark(findings):
+    from collections import Counter, defaultdict
     cohort = [f for f in findings if any(w in f[0] for w in ENV)]
     def classify(t): return [n for n, kws in THEMES if any(k in t for k in kws)]
     theme = Counter(); ex = defaultdict(list); exo = defaultdict(set)
@@ -79,15 +85,35 @@ def benchmark(findings):
 
 
 def build():
-    findings, reports = load()
+    findings, reports, fl = load()
+
+    # 파일 데이터: 폴더별 names + splits(원본→조각들). 파싱은 클라이언트 parseFn에서.
+    names = {}; splits = {}
+    total_files = 0
+    for folder in FOLDERS:
+        arr = fl["files"].get(folder, [])
+        nm = []; sp = {}
+        for display, parts, is_split in arr:
+            nm.append(display)
+            if is_split:
+                sp[display] = parts
+        names[folder] = nm; splits[folder] = sp
+        total_files += len(nm)
+
+    total_reports = len(reports)
+    cohort_orgs, cohort_n, bench_cards = benchmark(findings)
+    n_best = sum(1 for r in reports if r[6] == "Y")
+    n_orgs = len({r[1] for r in reports})
+
     fpayload = json.dumps(findings, ensure_ascii=False, separators=(",", ":"))
     rpayload = json.dumps(reports, ensure_ascii=False, separators=(",", ":"))
-    fl = json.load(open(FILELIST, encoding="utf-8"))
-    rf1payload = json.dumps(fl["r1"], ensure_ascii=False, separators=(",", ":"))
-    rf2payload = json.dumps(fl["r2"], ensure_ascii=False, separators=(",", ":"))
-    cohort_orgs, cohort_n, bench_cards = benchmark(findings)
-    dispo_chips = "".join(f'<button class="chip" data-d="{html.escape(d)}">{html.escape(d)}</button>' for d in DISPO_CHIPS)
-    total_att = 56681
+    names_payload = json.dumps(names, ensure_ascii=False, separators=(",", ":"))
+    splits_payload = json.dumps(splits, ensure_ascii=False, separators=(",", ":"))
+    folders_payload = json.dumps(FOLDERS, ensure_ascii=False)
+    period_payload = json.dumps(PERIOD, ensure_ascii=False)
+    dispo_json = json.dumps(DISPO_CHIPS, ensure_ascii=False)
+
+    ds_options = "".join(f'<option value="{html.escape(f)}">{html.escape(f)} ({PERIOD[f]})</option>' for f in FOLDERS)
 
     page = f'''<!doctype html>
 <html lang="ko">
@@ -158,10 +184,16 @@ def build():
   tbody td{{padding:8px 11px;border-bottom:1px solid var(--grid);vertical-align:top;}}
   tbody tr:hover{{background:var(--soft);}}
   td.org{{white-space:nowrap;font-weight:600;}} td.c{{white-space:nowrap;color:var(--ink2);}}
+  .src{{display:inline-block;font-size:.68rem;background:var(--surface2);color:var(--ink2);border:1px solid var(--line);
+    padding:1px 6px;border-radius:9px;white-space:nowrap;}}
   .dtag{{display:inline-block;font-size:.69rem;background:var(--surface2);color:var(--ink2);border:1px solid var(--line);
     padding:1px 6px;border-radius:10px;margin:1px 3px 1px 0;white-space:nowrap;}}
   .best{{display:inline-block;font-size:.69rem;background:var(--good);color:#fff;padding:1px 7px;border-radius:10px;font-weight:600;}}
   a.open{{color:var(--accent);text-decoration:none;font-weight:600;white-space:nowrap;}} a.open:hover{{text-decoration:underline;}}
+  .filelist{{display:flex;flex-wrap:wrap;gap:3px 8px;}}
+  .filelist a{{color:var(--accent);text-decoration:none;font-size:.8rem;white-space:nowrap;}}
+  .filelist a:hover{{text-decoration:underline;}}
+  .splittag{{font-size:.64rem;color:var(--muted);border:1px solid var(--line);border-radius:8px;padding:0 5px;margin-left:3px;}}
   .empty{{padding:36px;text-align:center;color:var(--muted);}}
   .cards{{display:grid;grid-template-columns:1fr 1fr;gap:14px;}} @media(max-width:760px){{.cards{{grid-template-columns:1fr;}}}}
   .card{{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px;}}
@@ -173,8 +205,6 @@ def build():
   .exorg{{color:var(--ink);font-weight:600;}}
   svg .axis{{stroke:var(--line);stroke-width:1;}} svg .gl{{stroke:var(--grid);stroke-width:1;}}
   svg text{{fill:var(--muted);font-size:11px;}} svg .lbl{{fill:var(--ink2);font-size:11px;font-weight:600;}}
-  .legend{{display:flex;gap:16px;font-size:.8rem;color:var(--ink2);margin:6px 0 2px;}}
-  .legend i{{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:5px;vertical-align:-1px;}}
   .foot{{margin-top:22px;color:var(--muted);font-size:.76rem;border-top:1px solid var(--grid);padding-top:14px;}}
   .note{{font-size:.82rem;color:var(--ink2);margin:0 0 12px;}}
 </style>
@@ -183,7 +213,7 @@ def build():
 <div class="wrap">
   <header>
     <h1>공공감사 통합 대시보드</h1>
-    <p>공공감사포털(pap.go.kr) 자체감사결과 · 보고서 15,898건 · 첨부 {total_att:,}개 · 2021~2026. 지적제목은 문서 본문 추출(자체감사결과), 처분·모범사례는 포털 공식값.</p>
+    <p>공공감사포털(pap.go.kr) 자체감사결과 · 보고서 {total_reports:,}건 · 첨부 {total_files:,}개 · 2016~2026 (자체감사파일1~4 통합). 지적제목은 문서 본문 추출(자체감사파일3), 처분·모범사례는 포털 공식값.</p>
   </header>
   <div class="tabs" role="tablist">
     <button class="tab" role="tab" data-v="overview" aria-selected="true">현황</button>
@@ -198,21 +228,22 @@ def build():
   <!-- 현황 -->
   <div class="view on" id="v-overview">
     <div class="tiles">
-      <div class="tile"><div class="n">15,898</div><div class="l">보고서</div></div>
-      <div class="tile"><div class="n">{total_att:,}</div><div class="l">첨부파일</div></div>
-      <div class="tile"><div class="n" id="ov-orgs">0</div><div class="l">기관</div></div>
-      <div class="tile"><div class="n good" id="ov-best">0</div><div class="l">모범사례 보고서</div></div>
-      <div class="tile"><div class="n">2021-2026</div><div class="l">수집 기간</div></div>
+      <div class="tile"><div class="n">{total_reports:,}</div><div class="l">보고서</div></div>
+      <div class="tile"><div class="n">{total_files:,}</div><div class="l">첨부파일</div></div>
+      <div class="tile"><div class="n" id="ov-orgs">{n_orgs:,}</div><div class="l">기관</div></div>
+      <div class="tile"><div class="n good" id="ov-best">{n_best:,}</div><div class="l">모범사례 보고서</div></div>
+      <div class="tile"><div class="n">2016-2026</div><div class="l">수집 기간</div></div>
     </div>
     <div class="grid2">
+      <div class="panel"><h2>출처(기간)별 보고서</h2><div class="bars" id="ov-src"></div></div>
       <div class="panel"><h2>감사분야 분포</h2><div class="bars" id="ov-field"></div></div>
-      <div class="panel"><h2>처분종류 분포 (공식)</h2><div class="bars" id="ov-dispo"></div></div>
     </div>
+    <div class="panel"><h2>처분종류 분포 (공식)</h2><div class="bars" id="ov-dispo"></div></div>
   </div>
 
-  <!-- 지적 탐색 (자체감사결과, 본문 지적제목) -->
+  <!-- 지적 탐색 -->
   <div class="view" id="v-findings">
-    <p class="note">자체감사결과(2025~2026) 첨부 10,830개를 <b>문서 본문에서 뽑은 지적제목</b>으로 검색합니다. (처분키워드는 본문 신호로 참고용)</p>
+    <p class="note">자체감사파일3(2025~2026) 첨부 {len(findings):,}개를 <b>문서 본문에서 뽑은 지적제목</b>으로 검색합니다. (본문 파싱은 이 폴더만 수행 — 처분키워드는 본문 신호로 참고용)</p>
     <div class="panel">
       <div class="filters">
         <div class="fg" style="flex:1 1 240px"><label>검색 (기관·지적제목·파일명)</label><input type="search" id="f-q" placeholder="예: 수의계약, 초과근무…" autocomplete="off"></div>
@@ -227,13 +258,13 @@ def build():
     <div class="tblwrap"><table><thead><tr><th>기관</th><th>연도</th><th>분야</th><th>지적제목</th><th>처분키워드</th><th>원문</th></tr></thead><tbody id="f-body"></tbody></table></div>
   </div>
 
-  <!-- 보고서 탐색 (두 폴더, 공식 처분/모범사례) -->
+  <!-- 보고서 탐색 (통합) -->
   <div class="view" id="v-reports">
-    <p class="note">두 폴더 보고서 15,898건을 <b>포털 공식 메타데이터</b>(감사사항명·처분종류·모범사례)로 검색합니다.</p>
+    <p class="note">자체감사파일1~4 보고서 {total_reports:,}건을 <b>포털 공식 메타데이터</b>(감사사항명·처분종류·모범사례)로 <b>통합 검색</b>합니다. 출처(기간)는 컬럼으로 표시되며, 필요하면 필터로 좁힐 수 있습니다.</p>
     <div class="panel">
       <div class="filters">
         <div class="fg" style="flex:1 1 240px"><label>검색 (기관·감사사항명)</label><input type="search" id="r-q" placeholder="예: 계약, 개인정보…" autocomplete="off"></div>
-        <div class="fg"><label>데이터셋</label><select id="r-ds"><option value="">전체</option><option value="자체감사결과">자체감사결과(25~26)</option><option value="자체감사파일2">자체감사파일2(21~25)</option></select></div>
+        <div class="fg"><label>출처(기간)</label><select id="r-ds"><option value="">전체(통합)</option>{ds_options}</select></div>
         <div class="fg"><label>기관</label><select id="r-org"><option value="">전체</option></select></div>
         <div class="fg"><label>연도</label><select id="r-year"><option value="">전체</option></select></div>
         <div class="fg"><label>감사분야</label><select id="r-field"><option value="">전체</option></select></div>
@@ -243,16 +274,16 @@ def build():
       <button class="reset" id="r-reset">필터 초기화</button>
     </div>
     <div class="resbar"><div class="count"><b id="r-n">0</b>건</div><div class="hint" id="r-hint"></div></div>
-    <div class="tblwrap"><table><thead><tr><th>기관</th><th>연도</th><th>분야</th><th>감사사항명</th><th>처분종류</th><th>모범</th><th>형식</th><th>열기</th></tr></thead><tbody id="r-body"></tbody></table></div>
+    <div class="tblwrap"><table><thead><tr><th>출처</th><th>기관</th><th>연도</th><th>분야</th><th>감사사항명</th><th>처분종류</th><th>모범</th><th>파일</th></tr></thead><tbody id="r-body"></tbody></table></div>
   </div>
 
-  <!-- 파일 탐색 (전체 첨부파일, 각 파일 바로 열기) -->
+  <!-- 파일 탐색 (통합, 전체 첨부파일) -->
   <div class="view" id="v-files">
-    <p class="note">전체 첨부파일 <b>56,686개</b>를 파일명(기관·연도·분야 포함)으로 검색하고 <b>각 파일을 바로 엽니다</b>. (온라인=GitHub 원문, 로컬=폴더)</p>
+    <p class="note">전체 첨부파일 <b>{total_files:,}개</b>(자체감사파일1~4 통합)를 파일명으로 검색하고 <b>각 파일을 바로 엽니다</b>. 분할된 대용량 파일은 원본으로 묶어 조각 링크를 함께 제공합니다. (온라인=GitHub 원문, 로컬=폴더)</p>
     <div class="panel">
       <div class="filters">
         <div class="fg" style="flex:1 1 260px"><label>검색 (파일명·기관)</label><input type="search" id="x-q" placeholder="예: 한국환경공단, 종합감사, 계약…" autocomplete="off"></div>
-        <div class="fg"><label>데이터셋</label><select id="x-ds"><option value="">전체</option><option value="0">자체감사결과(25~26)</option><option value="1">자체감사파일2(21~25)</option></select></div>
+        <div class="fg"><label>출처(기간)</label><select id="x-ds"><option value="">전체(통합)</option>{ds_options}</select></div>
         <div class="fg"><label>연도</label><select id="x-year"><option value="">전체</option></select></div>
         <div class="fg"><label>감사분야</label><select id="x-field"><option value="">전체</option></select></div>
         <div class="fg"><label>형식</label><select id="x-ext"><option value="">전체</option></select></div>
@@ -260,7 +291,7 @@ def build():
       <button class="reset" id="x-reset">필터 초기화</button>
     </div>
     <div class="resbar"><div class="count"><b id="x-n">0</b>개 파일</div><div class="hint" id="x-hint"></div></div>
-    <div class="tblwrap"><table><thead><tr><th>기관</th><th>연도</th><th>분야</th><th>파일명</th><th>형식</th><th>열기</th></tr></thead><tbody id="x-body"></tbody></table></div>
+    <div class="tblwrap"><table><thead><tr><th>출처</th><th>기관</th><th>연도</th><th>분야</th><th>파일명</th><th>형식</th><th>열기</th></tr></thead><tbody id="x-body"></tbody></table></div>
   </div>
 
   <!-- 기관 프로파일 -->
@@ -271,7 +302,7 @@ def build():
 
   <!-- 모범사례 -->
   <div class="view" id="v-best">
-    <p class="note"><b>모범사례 포함 보고서 4,046건</b> (포털 공식 분류). 동종기관의 잘한 사례를 벤치마킹하세요.</p>
+    <p class="note"><b>모범사례 포함 보고서 {n_best:,}건</b> (포털 공식 분류). 동종기관의 잘한 사례를 벤치마킹하세요.</p>
     <div class="panel">
       <div class="filters">
         <div class="fg" style="flex:1 1 240px"><label>검색 (기관·감사사항명)</label><input type="search" id="b-q" placeholder="예: 청렴, 안전…" autocomplete="off"></div>
@@ -281,56 +312,76 @@ def build():
       </div>
     </div>
     <div class="resbar"><div class="count"><b id="b-n">0</b>건</div><div class="hint" id="b-hint"></div></div>
-    <div class="tblwrap"><table><thead><tr><th>기관</th><th>연도</th><th>분야</th><th>감사사항명</th><th>함께 부과된 처분</th><th>형식</th><th>열기</th></tr></thead><tbody id="b-body"></tbody></table></div>
+    <div class="tblwrap"><table><thead><tr><th>출처</th><th>기관</th><th>연도</th><th>분야</th><th>감사사항명</th><th>함께 부과된 처분</th><th>파일</th></tr></thead><tbody id="b-body"></tbody></table></div>
   </div>
 
   <!-- 벤치마크 -->
   <div class="view" id="v-bench">
-    <p class="note">환경·에너지 {cohort_orgs}개 기관 {cohort_n:,}건(자체감사결과)의 반복 지적 주제와 한국환경공단 사전점검 체크리스트.</p>
+    <p class="note">환경·에너지 {cohort_orgs}개 기관 {cohort_n:,}건(자체감사파일3)의 반복 지적 주제와 한국환경공단 사전점검 체크리스트.</p>
     <div class="cards">{bench_cards}</div>
   </div>
 
   <div class="foot">
-    처분·모범사례·집계는 포털 목록 API 공식값(보고서 단위), 지적제목은 자체감사결과 문서 본문 추출(파일 단위)입니다. 원문 '열기'는 온라인=GitHub, 로컬=폴더로 연결(비공개 저장소는 GitHub 로그인 필요). 표는 성능상 상위 400건까지 표시합니다.<br>
-    보고서 탐색·기관 프로파일·모범사례의 '열기'는 그 <b>기관·연도·분야 그룹의 파일</b>입니다(한 그룹에 감사가 여러 건이면 파일을 개별 감사로 1:1 구분할 수 없어 그룹 파일을 함께 표시 — 개별 파일 단위로 정확히 보려면 <b>파일 탐색</b> 탭을 쓰세요).
+    처분·모범사례·집계는 포털 목록 API 공식값(보고서 단위), 지적제목은 자체감사파일3 문서 본문 추출(파일 단위)입니다. 원문 '열기'는 온라인=GitHub, 로컬=폴더로 연결(비공개 저장소는 GitHub 로그인 필요). 표는 성능상 상위 400건까지 표시합니다.<br>
+    보고서 탐색·기관 프로파일·모범사례의 '파일'은 그 <b>기관·연도·분야 그룹의 파일 전체</b>입니다(한 그룹에 감사가 여러 건이면 파일을 개별 감사로 1:1 구분할 수 없어 그룹 파일을 모두 표시 — 개별 파일 단위로 정확히 보려면 <b>파일 탐색</b> 탭). 분할 대용량 파일은 원본 이름으로 묶고 (1)(2) 조각 링크를 제공합니다.
   </div>
 </div>
 
 <script>
-const F = {fpayload};   // [기관,연도,분야,순번,지적제목,처분키워드,형식,파일명]
-const R = {rpayload};   // [폴더,기관,연도,분야,감사사항명,처분종류,모범사례,조치수]
-const RF1 = {rf1payload};  // 자체감사결과 파일명
-const RF2 = {rf2payload};  // 자체감사파일2 파일명
-const FOLDERS = ["자체감사결과","자체감사파일2"];
+const F = {fpayload};       // [기관,연도,분야,순번,지적제목,처분키워드,형식,파일명]
+const R = {rpayload};       // [폴더,기관,연도,분야,감사사항명,처분종류,모범사례,조치수,파일명패턴]
+const NAMES = {names_payload};   // {{폴더: [표시파일명...]}}
+const SPLITS = {splits_payload}; // {{폴더: {{표시파일명: [조각파일...]}}}}
+const FOLDERS = {folders_payload};
+const PERIOD = {period_payload};
+const FINDINGS_FOLDER = "{FINDINGS_FOLDER}";
 const CAP=400;
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 const esc=s=>(s||"").replace(/[&<>"]/g,c=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}}[c]));
-const GH="https://github.com/haechyaning-commits/data/blob/main/자체감사결과/";
-const FILE_BASE=(location.protocol==="file:")?"자체감사결과/":GH;
-// 보고서(그룹)→파일 매핑: 파일명 base(번호·확장자 제거)로 그룹의 파일 찾기
-let FILEMAP=null;
-function ensureFileMap(){{
-  if(FILEMAP)return; FILEMAP={{}};
-  const add=(fi,fn)=>{{const b=fn.replace(/\.[^.]+$/,'').replace(/\((\d+)\)$/,'');const k=fi+'|'+b;(FILEMAP[k]=FILEMAP[k]||[]).push(fn);}};
-  RF1.forEach(fn=>add(0,fn)); RF2.forEach(fn=>add(1,fn));
-}}
-function fileCell(folder,pattern){{
-  ensureFileMap();
-  const fi=folder==='자체감사결과'?0:1;
-  const files=(FILEMAP[fi+'|'+pattern]||[]).slice().sort();
-  const dash='<span style="color:var(--muted)">—</span>';
-  if(!files.length) return [dash,dash];
-  const exts=[...new Set(files.map(f=>(f.match(/\.([^.]+)$/)||['',''])[1]))].join('·');
-  const base=(location.protocol==="file:")?folder+"/":("https://github.com/haechyaning-commits/data/blob/main/"+folder+"/");
-  const shown=files.slice(0,5);
-  const links=shown.map(f=>{{const num=(f.match(/\((\d+)\)\.[^.]+$/)||[])[1];return `<a class="open" href="${{base+encodeURIComponent(f)}}" target="_blank" rel="noopener">${{num?('('+num+')'):'열기'}}</a>`;}}).join(' ');
-  const more=files.length>5?` <span style="color:var(--muted)">+${{files.length-5}}</span>`:'';
-  return [esc(exts), links+more];
+const isFile=(location.protocol==="file:");
+function ghBase(folder){{ return isFile ? (folder+"/") : ("https://github.com/haechyaning-commits/data/blob/main/"+folder+"/"); }}
+// 표시파일명 → 실제 다운로드 링크들 (분할이면 조각들)
+function dlLinks(folder, display){{
+  const base=ghBase(folder);
+  const parts=(SPLITS[folder]||{{}})[display];
+  if(parts){{ return parts.map((p,i)=>`<a class="open" href="${{base+encodeURIComponent(p)}}" target="_blank" rel="noopener">조각(${{i+1}})</a>`).join(' ')
+    + ' <span class="splittag">분할</span>'; }}
+  return `<a class="open" href="${{base+encodeURIComponent(display)}}" target="_blank" rel="noopener">열기</a>`;
 }}
 const uniq=(arr)=>[...new Set(arr)].filter(Boolean);
 function opts(sel,vals,sort){{ let v=uniq(vals); if(sort==='num') v.sort((a,b)=>b-a); else v.sort();
   sel.insertAdjacentHTML('beforeend', v.map(x=>`<option value="${{esc(x)}}">${{esc(x)}}</option>`).join('')); }}
 function toks(s){{return s?s.replace(/,/g,';').split(';').map(x=>x.trim()).filter(Boolean):[];}}
+function srcTag(folder){{ return `<span class="src">${{esc(folder.replace('자체감사',''))}} · ${{esc(PERIOD[folder]||'')}}</span>`; }}
+
+// 파일명 → [기관, 연도, 감사분야, 확장자]  (분할 원본이름도 정상 파싱됨)
+function parseFn(fn){{
+  const ext=(fn.match(/\.([^.]+)$/)||['',''])[1];
+  let base=fn.replace(/\.[^.]+$/,'').replace(/\((\d+)\)$/,'');
+  const m=base.match(/^(.*)_(\d{{4}})년\s*(.*)$/);
+  if(m) return [m[1], m[2], (m[3].trim()||'기타'), ext];
+  return [base, '', '', ext];
+}}
+
+// 보고서 그룹(폴더+파일명패턴) → 그 그룹의 파일 전체
+let FILEMAP=null;
+function ensureFileMap(){{
+  if(FILEMAP)return; FILEMAP={{}};
+  for(const folder of FOLDERS){{
+    for(const display of (NAMES[folder]||[])){{
+      const b=display.replace(/\.[^.]+$/,'').replace(/\((\d+)\)$/,'');
+      const k=folder+'|'+b;(FILEMAP[k]=FILEMAP[k]||[]).push(display);
+    }}
+  }}
+}}
+function fileCell(folder,pattern){{
+  ensureFileMap();
+  const files=(FILEMAP[folder+'|'+pattern]||[]).slice().sort();
+  const dash='<span style="color:var(--muted)">—</span>';
+  if(!files.length) return dash;
+  // 전체 파일을 목록으로 (생략 없음)
+  return '<div class="filelist">'+files.map(f=>dlLinks(folder,f)).join('')+'</div>';
+}}
 
 // ---- 탭 ----
 $$('.tab').forEach(t=>t.addEventListener('click',()=>{{
@@ -341,7 +392,6 @@ $$('.tab').forEach(t=>t.addEventListener('click',()=>{{
   if(t.dataset.v==='files') initFiles();
 }}));
 
-// ---- 공용 막대 ----
 function bars(el,counts,accent){{
   const e=Object.entries(counts).sort((a,b)=>b[1]-a[1]); const mx=e.length?e[0][1]:1;
   el.innerHTML = e.length? e.map(([k,v])=>{{const p=Math.max(2,v/mx*100);
@@ -351,11 +401,11 @@ function bars(el,counts,accent){{
 
 // ---- 현황 ----
 (function(){{
-  $('#ov-orgs').textContent=uniq(R.map(r=>r[1])).length.toLocaleString();
-  $('#ov-best').textContent=R.filter(r=>r[6]==='Y').length.toLocaleString();
-  const fc={{}},dc={{}};
-  for(const r of R){{ fc[r[3]]=(fc[r[3]]||0)+1; for(const t of toks(r[5])){{if(t!=='모범사례')dc[t]=(dc[t]||0)+1;}} }}
-  bars($('#ov-field'),fc);
+  const sc={{}},fc={{}},dc={{}};
+  for(const r of R){{ sc[r[0]]=(sc[r[0]]||0)+1; fc[r[3]]=(fc[r[3]]||0)+1; for(const t of toks(r[5])){{if(t!=='모범사례')dc[t]=(dc[t]||0)+1;}} }}
+  const scLab={{}}; for(const f of FOLDERS) if(sc[f]) scLab[f.replace('자체감사','')+' ('+PERIOD[f]+')']=sc[f];
+  bars($('#ov-src'),scLab);
+  bars($('#ov-field'),Object.fromEntries(Object.entries(fc).sort((a,b)=>b[1]-a[1]).slice(0,12)));
   const top=Object.entries(dc).sort((a,b)=>b[1]-a[1]).slice(0,12); bars($('#ov-dispo'),Object.fromEntries(top));
 }})();
 function lineChart(labels,series){{
@@ -377,7 +427,7 @@ function lineChart(labels,series){{
   return `<div style="overflow-x:auto"><svg viewBox="0 0 ${{W}} ${{H}}" width="100%" style="min-width:640px">${{g}}${{paths}}</svg></div>`;
 }}
 
-// ---- 지적 탐색 (findings) ----
+// ---- 지적 탐색 ----
 (function(){{
   opts($('#f-org'),F.map(f=>f[0])); opts($('#f-year'),F.map(f=>f[1]),'num'); opts($('#f-field'),F.map(f=>f[2]));
   $('#f-dispo').innerHTML=["징계","주의","통보","시정","개선","회수","경고","권고"].map(d=>`<button class="chip" data-d="${{d}}">${{d}}</button>`).join('');
@@ -393,9 +443,8 @@ function lineChart(labels,series){{
     $('#f-hint').textContent=res.length>CAP?`상위 ${{CAP}}건 표시`:'';
     const sh=res.slice(0,CAP);
     $('#f-body').innerHTML = sh.length? sh.map(f=>{{
-      const href=FILE_BASE+encodeURIComponent(f[7]);
       const dt=toks(f[5]).map(x=>`<span class="dtag">${{esc(x)}}</span>`).join('');
-      return `<tr><td class="org">${{esc(f[0])}}</td><td class="c">${{esc(f[1])}}</td><td class="c">${{esc(f[2])}}</td><td>${{esc(f[4])}}</td><td>${{dt}}</td><td><a class="open" href="${{href}}" target="_blank" rel="noopener">열기</a></td></tr>`;
+      return `<tr><td class="org">${{esc(f[0])}}</td><td class="c">${{esc(f[1])}}</td><td class="c">${{esc(f[2])}}</td><td>${{esc(f[4])}}</td><td>${{dt}}</td><td>${{dlLinks(FINDINGS_FOLDER,f[7])}}</td></tr>`;
     }}).join('') : '<tr><td colspan="6"><div class="empty">결과가 없습니다.</div></td></tr>';
   }};
   $('#f-q').addEventListener('input',e=>{{st.q=e.target.value.trim();clearTimeout(t);t=setTimeout(render,140);}});
@@ -410,16 +459,15 @@ function lineChart(labels,series){{
   render();
 }})();
 
-// ---- 보고서 탐색 (reports) ----
+// ---- 보고서 탐색 (통합) ----
 function reportRow(r){{
   const best=r[6]==='Y'?'<span class="best">모범</span>':'';
   const dt=toks(r[5]).filter(x=>x!=='모범사례').map(x=>`<span class="dtag">${{esc(x)}}</span>`).join('');
-  const fc=fileCell(r[0],r[8]);
-  return `<tr><td class="org">${{esc(r[1])}}</td><td class="c">${{esc(r[2])}}</td><td class="c">${{esc(r[3])}}</td><td>${{esc(r[4])}}</td><td>${{dt}}</td><td>${{best}}</td><td class="c">${{fc[0]}}</td><td>${{fc[1]}}</td></tr>`;
+  return `<tr><td>${{srcTag(r[0])}}</td><td class="org">${{esc(r[1])}}</td><td class="c">${{esc(r[2])}}</td><td class="c">${{esc(r[3])}}</td><td>${{esc(r[4])}}</td><td>${{dt}}</td><td>${{best}}</td><td>${{fileCell(r[0],r[8])}}</td></tr>`;
 }}
 (function(){{
   opts($('#r-org'),R.map(r=>r[1])); opts($('#r-year'),R.map(r=>r[2]),'num'); opts($('#r-field'),R.map(r=>r[3]));
-  $('#r-dispo').innerHTML={json.dumps(DISPO_CHIPS,ensure_ascii=False)}.map(d=>`<button class="chip" data-d="${{d}}">${{d}}</button>`).join('');
+  $('#r-dispo').innerHTML={dispo_json}.map(d=>`<button class="chip" data-d="${{d}}">${{d}}</button>`).join('');
   const st={{q:'',ds:'',org:'',year:'',field:'',best:'',dispos:new Set()}};let t=null;
   const render=()=>{{
     let res=R.filter(r=>{{
@@ -443,35 +491,30 @@ function reportRow(r){{
   render();
 }})();
 
-// ---- 파일 탐색 (전체 첨부파일) ----
+// ---- 파일 탐색 (통합, 전체) ----
 let filesInit=false, FILES=null;
-function parseFn(fn){{
-  const ext=(fn.match(/\.([^.]+)$/)||['',''])[1];
-  let base=fn.replace(/\.[^.]+$/,'').replace(/\((\d+)\)$/,'');
-  const m=base.match(/^(.*)_(\d{{4}})년\s*(.*)$/);
-  if(m) return [m[1], m[2], (m[3].trim()||'기타'), ext];
-  return [base, '', '', ext];
-}}
 function initFiles(){{
   if(filesInit) return; filesInit=true;
   FILES=[];
-  RF1.forEach(fn=>{{const p=parseFn(fn);FILES.push([0,fn,p[0],p[1],p[2],p[3]]);}});
-  RF2.forEach(fn=>{{const p=parseFn(fn);FILES.push([1,fn,p[0],p[1],p[2],p[3]]);}});
+  FOLDERS.forEach(folder=>{{
+    for(const display of (NAMES[folder]||[])){{
+      const p=parseFn(display);
+      FILES.push([folder, display, p[0], p[1], p[2], p[3]]);
+    }}
+  }});
   opts($('#x-year'),FILES.map(f=>f[3]),'num'); opts($('#x-field'),FILES.map(f=>f[4])); opts($('#x-ext'),FILES.map(f=>f[5]));
   const st={{q:'',ds:'',year:'',field:'',ext:''}};let t=null;
   const render=()=>{{
     let res=FILES.filter(f=>{{
-      if(st.ds!==''&&String(f[0])!==st.ds)return false;
+      if(st.ds&&f[0]!==st.ds)return false;
       if(st.year&&f[3]!==st.year)return false; if(st.field&&f[4]!==st.field)return false; if(st.ext&&f[5]!==st.ext)return false;
       if(st.q){{const q=st.q.toLowerCase();if(!(f[1].toLowerCase().includes(q)))return false;}}
       return true;}});
     $('#x-n').textContent=res.length.toLocaleString(); $('#x-hint').textContent=res.length>CAP?`상위 ${{CAP}}개 표시`:'';
     const sh=res.slice(0,CAP);
     $('#x-body').innerHTML= sh.length? sh.map(f=>{{
-      const base=(location.protocol==="file:")?FOLDERS[f[0]]+"/":("https://github.com/haechyaning-commits/data/blob/main/"+FOLDERS[f[0]]+"/");
-      const href=base+encodeURIComponent(f[1]);
-      return `<tr><td class="org">${{esc(f[2])}}</td><td class="c">${{esc(f[3])}}</td><td class="c">${{esc(f[4])}}</td><td>${{esc(f[1])}}</td><td class="c">${{esc(f[5])}}</td><td><a class="open" href="${{href}}" target="_blank" rel="noopener">열기</a></td></tr>`;
-    }}).join('') : '<tr><td colspan="6"><div class="empty">결과가 없습니다.</div></td></tr>';
+      return `<tr><td>${{srcTag(f[0])}}</td><td class="org">${{esc(f[2])}}</td><td class="c">${{esc(f[3])}}</td><td class="c">${{esc(f[4])}}</td><td>${{esc(f[1])}}</td><td class="c">${{esc(f[5])}}</td><td>${{dlLinks(f[0],f[1])}}</td></tr>`;
+    }}).join('') : '<tr><td colspan="7"><div class="empty">결과가 없습니다.</div></td></tr>';
   }};
   $('#x-q').addEventListener('input',e=>{{st.q=e.target.value.trim();clearTimeout(t);t=setTimeout(render,160);}});
   ['ds','year','field','ext'].forEach(k=>$('#x-'+k).addEventListener('change',e=>{{st[k]=e.target.value;render();}}));
@@ -488,7 +531,7 @@ function initFiles(){{
     const best=rs.filter(r=>r[6]==='Y').length;
     const fc={{}},dc={{}},yc={{}};
     for(const r of rs){{fc[r[3]]=(fc[r[3]]||0)+1; yc[r[2]]=(yc[r[2]]||0)+1; for(const x of toks(r[5]))if(x!=='모범사례')dc[x]=(dc[x]||0)+1;}}
-    const years=['2021','2022','2023','2024','2025','2026'];
+    const years=['2016','2017','2018','2019','2020','2021','2022','2023','2024','2025','2026'];
     const trend=lineChart(years,[{{d:years.map(y=>yc[y]||0),c:'var(--accent)'}}]);
     const rows=rs.slice(0,200).map(reportRow).join('');
     box.innerHTML=`
@@ -504,7 +547,7 @@ function initFiles(){{
         <div class="panel"><h2>처분종류</h2><div class="bars" id="o-d"></div></div>
       </div>
       <div class="panel"><h2>보고서 목록 (${{rs.length>200?'상위 200':rs.length}})</h2>
-        <div class="tblwrap"><table><thead><tr><th>기관</th><th>연도</th><th>분야</th><th>감사사항명</th><th>처분종류</th><th>모범</th><th>형식</th><th>열기</th></tr></thead><tbody>${{rows}}</tbody></table></div></div>`;
+        <div class="tblwrap"><table><thead><tr><th>출처</th><th>기관</th><th>연도</th><th>분야</th><th>감사사항명</th><th>처분종류</th><th>모범</th><th>파일</th></tr></thead><tbody>${{rows}}</tbody></table></div></div>`;
     bars($('#o-f'),fc); bars($('#o-d'),Object.fromEntries(Object.entries(dc).sort((a,b)=>b[1]-a[1]).slice(0,10)));
   }});
 }})();
@@ -522,8 +565,7 @@ function initFiles(){{
     const sh=res.slice(0,CAP);
     $('#b-body').innerHTML= sh.length? sh.map(r=>{{
       const dt=toks(r[5]).filter(x=>x!=='모범사례').map(x=>`<span class="dtag">${{esc(x)}}</span>`).join('');
-      const fc=fileCell(r[0],r[8]);
-      return `<tr><td class="org">${{esc(r[1])}}</td><td class="c">${{esc(r[2])}}</td><td class="c">${{esc(r[3])}}</td><td>${{esc(r[4])}}</td><td>${{dt}}</td><td class="c">${{fc[0]}}</td><td>${{fc[1]}}</td></tr>`;
+      return `<tr><td>${{srcTag(r[0])}}</td><td class="org">${{esc(r[1])}}</td><td class="c">${{esc(r[2])}}</td><td class="c">${{esc(r[3])}}</td><td>${{esc(r[4])}}</td><td>${{dt}}</td><td>${{fileCell(r[0],r[8])}}</td></tr>`;
     }}).join('') : '<tr><td colspan="7"><div class="empty">결과가 없습니다.</div></td></tr>';
   }};
   $('#b-q').addEventListener('input',e=>{{st.q=e.target.value.trim();clearTimeout(t);t=setTimeout(render,140);}});
@@ -535,7 +577,7 @@ function initFiles(){{
 </html>'''
     with open(OUT, "w", encoding="utf-8") as f:
         f.write(page)
-    print(f"완료: {OUT}  ({os.path.getsize(OUT)//1024}KB)  findings={len(findings):,} reports={len(reports):,}")
+    print(f"완료: {OUT}  ({os.path.getsize(OUT)//1024}KB)  reports={len(reports):,} findings={len(findings):,} files={total_files:,}")
 
 
 if __name__ == "__main__":
