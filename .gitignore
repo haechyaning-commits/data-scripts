@@ -10,6 +10,7 @@ manifest3.json
 manifest_*.json
 *_checkpoint.json
 remaining2.txt
+remaining_*.txt
 renames3.json
 catalog.csv
 
