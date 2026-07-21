@@ -15,12 +15,17 @@ const fs = require('fs');
 const path = require('path');
 
 const OUT_DIR = process.argv[2] || '/home/user/data/자체감사파일3';
+const OUT_NAME = path.basename(OUT_DIR); // repo-relative prefix for the batch list
 const BATCH_BYTES = Number(process.argv[3] || 400000000); // ~400MB per batch
 const MANIFEST_FILE = path.join(__dirname, 'manifest_2016_2020.json');
 const DONE_FILE = path.join(__dirname, 'done_2016_2020.log');
 const REMAINING_FILE = path.join(__dirname, 'remaining_2016_2020.txt');
 const LOG_FILE = path.join(__dirname, 'progress_2016_2020.log');
 const UNAVAIL_FILE = path.join(__dirname, 'unavailable_2016_2020.log');
+// Exact repo-relative paths saved THIS batch, so the orchestrator can `git add`
+// only these (never the whole folder — that would re-stage prior batches'
+// now-removed worktree copies as deletions under a sparse checkout).
+const BATCH_LIST_FILE = path.join(__dirname, 'batch_files.txt');
 const DOWNLOAD_CONCURRENCY = 20;
 const MAX_CHUNK_BYTES = 90 * 1024 * 1024;
 
@@ -30,10 +35,11 @@ function log(msg) {
   fs.appendFileSync(LOG_FILE, line + '\n');
 }
 
+// Returns the array of filenames written (one, or several .part chunks).
 function saveMaybeSplit(finalName, ext, buf) {
   if (buf.length <= MAX_CHUNK_BYTES) {
     fs.writeFileSync(path.join(OUT_DIR, `${finalName}${ext}`), buf);
-    return `${finalName}${ext}`;
+    return [`${finalName}${ext}`];
   }
   const parts = Math.ceil(buf.length / MAX_CHUNK_BYTES);
   const names = [];
@@ -43,7 +49,7 @@ function saveMaybeSplit(finalName, ext, buf) {
     fs.writeFileSync(path.join(OUT_DIR, name), chunk);
     names.push(name);
   }
-  return names.join(', ');
+  return names;
 }
 
 function pLimit(concurrency) {
@@ -82,6 +88,7 @@ async function postDownload(fileId, fileSn, retries = 4) {
 
 async function main() {
   fs.mkdirSync(OUT_DIR, { recursive: true });
+  fs.writeFileSync(BATCH_LIST_FILE, ''); // fresh per batch
   const manifest = JSON.parse(fs.readFileSync(MANIFEST_FILE, 'utf8'));
   const done = new Set(fs.existsSync(DONE_FILE) ? fs.readFileSync(DONE_FILE, 'utf8').split('\n').filter(Boolean) : []);
   const todo = manifest.filter((m) => !done.has(m.name));
@@ -109,9 +116,11 @@ async function main() {
         log(`UNAVAILABLE (HTTP 204, skipped): ${m.name}${m.ext}`);
         return;
       }
-      const savedAs = saveMaybeSplit(m.name, m.ext, buf);
+      const savedNames = saveMaybeSplit(m.name, m.ext, buf);
+      // Record repo-relative paths for the orchestrator's targeted git add.
+      fs.appendFileSync(BATCH_LIST_FILE, savedNames.map((n) => `${OUT_NAME}/${n}`).join('\n') + '\n');
       fs.appendFileSync(DONE_FILE, m.name + '\n');
-      log(`SAVED: ${savedAs} (${buf.length}B)`);
+      log(`SAVED: ${savedNames.join(', ')} (${buf.length}B)`);
     } catch (e) {
       failures++;
       log(`FAIL: ${m.name} :: ${e.message}`);

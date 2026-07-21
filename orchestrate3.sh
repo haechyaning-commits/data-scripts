@@ -5,9 +5,15 @@
 #
 # Layout note: the scripts + manifest + done log live in a SEPARATE repo
 # (/home/user/data-scripts), while the downloaded files go into the sparse
-# checkout of haechyaning-commits/data at /home/user/data. So only the output
-# folder (자체감사파일3) is committed/pushed to the data repo; the manifest and
-# done log are runtime artifacts kept locally in data-scripts.
+# checkout of haechyaning-commits/data at /home/user/data. Only the output
+# folder (자체감사파일3) is committed/pushed to the data repo.
+#
+# IMPORTANT (sparse-checkout safety): we `git add` ONLY the files this batch
+# saved (listed in batch_files.txt), never `git add 자체감사파일3`. Adding the
+# whole folder after prior batches' worktree copies were removed would stage
+# those as deletions, dropping them from the tree. After a successful push we
+# set skip-worktree on this batch's files and delete their worktree copies to
+# free disk; because later batches never re-add them, they persist in the tree.
 set -u
 
 DATA=/home/user/data
@@ -16,10 +22,10 @@ BRANCH=main
 OUT=자체감사파일3
 BATCH_BYTES=${BATCH_BYTES:-400000000}   # ~400MB per batch (stays under push size cap)
 REMAINING_FILE="$SCRIPTS/remaining_2016_2020.txt"
+BATCH_LIST="$SCRIPTS/batch_files.txt"
 
 cd "$DATA" || { echo "cannot cd $DATA" >&2; exit 1; }
-# Keep new files in-scope of the sparse checkout so they materialize until we
-# explicitly skip-worktree them after a successful push.
+git config gc.auto 0 2>/dev/null || true
 git sparse-checkout add "$OUT" 2>/dev/null || true
 
 PREV_REMAINING=-1
@@ -34,17 +40,18 @@ while true; do
   fi
   remaining=$(cat "$REMAINING_FILE" 2>/dev/null || echo -1)
 
-  # Commit ONLY the data folder to the data repo.
-  git add "$OUT" 2>/dev/null
+  # Stage ONLY this batch's saved files (repo-relative paths, one per line).
+  if [ -s "$BATCH_LIST" ]; then
+    git add --pathspec-from-file="$BATCH_LIST" -- 2>/dev/null
+  fi
   n_staged=$(git diff --cached --numstat | wc -l)
   if [ "$n_staged" -gt 0 ]; then
-    n_files=$(git diff --cached --numstat -- "$OUT" | wc -l)
-    git commit -q -m "자체감사파일3: 2016~2020 자체감사결과 배치 추가 (${n_files}개 파일, 남은 항목 ${remaining}건)
+    git commit -q -m "자체감사파일3: 2016~2020 자체감사결과 배치 추가 (${n_staged}개 파일, 남은 항목 ${remaining}건)
 
 Co-Authored-By: Claude <noreply@anthropic.com>"
 
     pushed=0
-    for delay in 0 2 4 8 16; do
+    for delay in 0 2 4 8 16 30; do
       [ "$delay" -gt 0 ] && sleep "$delay"
       if git push -u origin "$BRANCH"; then pushed=1; break; fi
       echo "push failed; retrying in next backoff step" >&2
@@ -55,8 +62,9 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
     fi
 
     # Free disk: keep this batch's blobs only in .git, drop worktree copies.
-    git ls-files -z "$OUT" | xargs -0 -r -n 500 git update-index --skip-worktree
-    git ls-files -z "$OUT" | while IFS= read -r -d '' f; do [ -f "$f" ] && rm -f "$f"; done
+    # skip-worktree + rm ONLY this batch's files (not the whole folder).
+    git update-index -z --skip-worktree --stdin < <(tr '\n' '\0' < "$BATCH_LIST")
+    while IFS= read -r f; do [ -n "$f" ] && [ -f "$f" ] && rm -f "$f"; done < "$BATCH_LIST"
   fi
 
   if [ "$remaining" = "0" ]; then
