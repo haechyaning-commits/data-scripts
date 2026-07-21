@@ -1,32 +1,34 @@
 #!/bin/bash
 # Orchestrates phase 2 of the 2016-01-01 ~ 2020-12-31 collection:
-#   download batch -> commit -> push -> free local copies, looping until
-#   manifest_2016_2020.json is exhausted.
+#   download batch -> commit -> push, looping until manifest_2016_2020.json is
+#   exhausted.
 #
-# Layout note: the scripts + manifest + done log live in a SEPARATE repo
-# (/home/user/data-scripts), while the downloaded files go into the sparse
-# checkout of haechyaning-commits/data at /home/user/data. Only the output
-# folder (자체감사파일3) is committed/pushed to the data repo.
+# Layout: scripts + manifest + done log live in /home/user/data-scripts; the
+# downloaded files go into the checkout of haechyaning-commits/data at
+# /home/user/data. Only the output folder (자체감사파일3) is committed/pushed.
 #
-# IMPORTANT (sparse-checkout safety): we `git add` ONLY the files this batch
-# saved (listed in batch_files.txt), never `git add 자체감사파일3`. Adding the
-# whole folder after prior batches' worktree copies were removed would stage
-# those as deletions, dropping them from the tree. After a successful push we
-# set skip-worktree on this batch's files and delete their worktree copies to
-# free disk; because later batches never re-add them, they persist in the tree.
+# Simple + robust model (no skip-worktree, no disk-freeing): all files stay
+# materialized on disk, and each batch does a plain `git add 자체감사파일3`.
+# Because no committed file is ever removed from the worktree, `git add` only
+# ever stages ADDITIONS — never deletions — so batches accumulate correctly.
+# (An earlier skip-worktree+rm approach broke under sparse-checkout by staging
+# prior batches as deletions; total download is ~8GB and disk has room, so we
+# just keep everything on disk.)
+#
+# Each `node` run is a fresh process, so it always reads the CURRENT $HTTPS_PROXY
+# (the proxy port changes across container restarts). Push is chunked at ~400MB
+# by the batch budget to stay under the request-size (413) cap.
 set -u
 
 DATA=/home/user/data
 SCRIPTS=/home/user/data-scripts
 BRANCH=main
 OUT=자체감사파일3
-BATCH_BYTES=${BATCH_BYTES:-400000000}   # ~400MB per batch (stays under push size cap)
+BATCH_BYTES=${BATCH_BYTES:-350000000}   # ~350MB per batch (stays under push size cap)
 REMAINING_FILE="$SCRIPTS/remaining_2016_2020.txt"
-BATCH_LIST="$SCRIPTS/batch_files.txt"
 
 cd "$DATA" || { echo "cannot cd $DATA" >&2; exit 1; }
 git config gc.auto 0 2>/dev/null || true
-git sparse-checkout add "$OUT" 2>/dev/null || true
 
 PREV_REMAINING=-1
 STALL=0
@@ -40,11 +42,15 @@ while true; do
   fi
   remaining=$(cat "$REMAINING_FILE" 2>/dev/null || echo -1)
 
-  # Stage ONLY this batch's saved files (repo-relative paths, one per line).
-  if [ -s "$BATCH_LIST" ]; then
-    git add --pathspec-from-file="$BATCH_LIST" -- 2>/dev/null
-  fi
+  # Stage the whole output folder. Safe because we never delete worktree copies,
+  # so only newly-downloaded files are staged (additions), never deletions.
+  git add "$OUT" 2>/dev/null
   n_staged=$(git diff --cached --numstat | wc -l)
+  n_del=$(git diff --cached --name-status | grep -c '^D' || true)
+  if [ "$n_del" -ne 0 ]; then
+    echo "SAFETY ABORT: $n_del deletions staged unexpectedly; not committing" >&2
+    exit 5
+  fi
   if [ "$n_staged" -gt 0 ]; then
     git commit -q -m "자체감사파일3: 2016~2020 자체감사결과 배치 추가 (${n_staged}개 파일, 남은 항목 ${remaining}건)
 
@@ -60,11 +66,6 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
       echo "git push failed after retries; aborting (files remain committed locally)" >&2
       exit 3
     fi
-
-    # Free disk: keep this batch's blobs only in .git, drop worktree copies.
-    # skip-worktree + rm ONLY this batch's files (not the whole folder).
-    git update-index -z --skip-worktree --stdin < <(tr '\n' '\0' < "$BATCH_LIST")
-    while IFS= read -r f; do [ -n "$f" ] && [ -f "$f" ] && rm -f "$f"; done < "$BATCH_LIST"
   fi
 
   if [ "$remaining" = "0" ]; then
