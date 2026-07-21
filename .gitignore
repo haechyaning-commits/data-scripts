@@ -18,6 +18,9 @@ catalog.csv
 *.nohup
 *.out
 
+# 배치별 저장 파일 목록(orchestrate3.sh가 targeted git add에 사용, 매 배치 재생성)
+batch_files.txt
+
 # 로그
 progress.log
 incremental.log
