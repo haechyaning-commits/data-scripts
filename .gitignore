@@ -40,3 +40,4 @@ unavailable*.log
 # 수집된 실제 데이터(이 저장소가 아니라 haechyaning-commits/data 로 감)
 자체감사결과/
 자체감사파일2/
+카탈로그_파일목록.csv
