@@ -15,10 +15,14 @@
 """
 import os, re, io, csv, sys, json, zlib, zipfile, traceback
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR = os.path.join(ROOT, "자체감사결과")
-OUT_CSV = os.path.join(ROOT, "감사지적_마스터인덱스.csv")
-PROGRESS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index_progress.log")
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_ROOT = "/home/user/data"
+# 대상 폴더는 인자로 지정(기본 자체감사파일3). 폴더별 findings CSV를 따로 생성해
+# 대시보드가 여러 폴더의 지적을 합쳐 쓸 수 있게 한다.
+FOLDER = next((a for a in sys.argv[1:] if not a.startswith("-")), "자체감사파일3")
+DATA_DIR = os.path.join(DATA_ROOT, FOLDER)
+OUT_CSV = os.path.join(SCRIPT_DIR, f"감사지적_마스터인덱스_{FOLDER}.csv")
+PROGRESS = os.path.join(SCRIPT_DIR, f"index_progress_{FOLDER}.log")
 
 # ----- 파일명 파싱 -----
 STEM_RE = re.compile(r"^(?P<org>.+?)_(?P<year>\d{4})년\s*(?P<field>[^(]+?)(?:\((?P<seq>\d+)\))?$")
@@ -196,6 +200,9 @@ def extract_text(path, ext):
 
 
 def main():
+    import signal
+    def _timeout(sig, frm): raise TimeoutError()
+    signal.signal(signal.SIGALRM, _timeout)
     files = sorted(os.listdir(DATA_DIR))
     files = [f for f in files if not f.startswith(".")]
     total = len(files)
@@ -214,7 +221,14 @@ def main():
             title, dispo = "", ""
             is_part = meta["part"] is not None or ext == "part"
             if not is_part and ext.lower() in ("pdf", "hwpx", "hwp", "txt"):
-                text = extract_text(path, ext.lower() if ext != "HWP" else "hwp")
+                # 파일 1개가 파싱에서 멎어도 전체가 멈추지 않도록 30초 상한
+                signal.alarm(30)
+                try:
+                    text = extract_text(path, ext.lower() if ext != "HWP" else "hwp")
+                except TimeoutError:
+                    text = "__ERR__:Timeout"
+                finally:
+                    signal.alarm(0)
                 if text.startswith("__ERR__"):
                     err += 1
                 else:

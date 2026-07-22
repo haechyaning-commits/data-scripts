@@ -41,3 +41,6 @@ unavailable*.log
 자체감사결과/
 자체감사파일2/
 카탈로그_파일목록.csv
+__pycache__/
+감사지적_마스터인덱스_*.csv
+index_progress*.log
