@@ -61,32 +61,124 @@ def classify_dispo(text):
             seen.add(k); out.append(k)
     return ";".join(out)
 
-# 정규화된 본문에서 "제 목 ... (다음 항목 라벨 전까지)"를 포착
-STOP = r"소\s*관\s*부\s*서|조\s*치\s*부\s*서|관\s*련\s*부\s*서|소\s*관\s*팀|조\s*치\s*부\s*처|내\s*용|처\s*분\s*요\s*구|판\s*단\s*기\s*준|업\s*무\s*현\s*황"
+# ----- 지적제목 추출 -----
+# 제목이 끝나는 경계 신호(표 헤더·섹션 라벨·감사서식). 공백 삽입에 관대하게 매칭해
+# 제목 뒤에 딸려오는 표/처분 텍스트를 잘라낸다.
+_STOP_WORDS = [
+    r"소\s*관\s*부\s*서", r"조\s*치\s*부\s*서", r"관\s*련\s*부\s*서", r"소\s*관\s*팀",
+    r"조\s*치\s*부\s*처", r"처\s*분\s*요\s*구", r"판\s*단\s*기\s*준", r"업\s*무\s*현\s*황",
+    r"감\s*사\s*자", r"처\s*분\s*구\s*분", r"처\s*분\s*종\s*류", r"처\s*분\s*대\s*상\s*자",
+    r"대\s*상\s*자\s*및\s*처\s*분", r"관\s*계\s*부\s*서", r"처\s*리\s*기\s*[한간]",
+    r"일\s*련\s*번\s*호", r"수\s*령\s*자", r"시\s*행\s*년\s*도", r"조\s*치\s*할?\s*사\s*항",
+    r"현\s*황\s*및\s*문\s*제\s*점", r"지\s*적\s*내\s*용", r"감\s*사\s*의\s*견",
+    r"검\s*토\s*의\s*견", r"관\s*계\s*법\s*령", r"세\s*부\s*내\s*용", r"지\s*적\s*사\s*항",
+    r"내\s*용", r"및\s*문\s*제\s*점",
+    # 감사서식 표 헤더(띄어쓰기 관대)
+    r"부\s*서\s*명", r"관\s*계\s*기\s*관", r"소\s*관\s*기\s*관", r"조\s*치\s*기\s*관",
+    r"감\s*사\s*담\s*당", r"처\s*분\s*내\s*역", r"처\s*분\s*결\s*과", r"조\s*치\s*결\s*과",
+    r"관\s*계\s*팀", r"소\s*속\s*및\s*성\s*명",
+    # 불릿이 붙은 섹션 헤더(예: "○ 현황", "□ 문제점")
+    r"[□○◯●▷▪‣]\s*(?:현\s*황|문\s*제\s*점|조\s*치\s*할?\s*사\s*항|지\s*적\s*사\s*항|검\s*토\s*의\s*견)",
+]
+# 번호가 붙은 섹션 헤더(예: "6. 조치", "3) 현황")
+_NUM_SECTION = r"\d+\s*[.)]\s*(?:조치|현황|내용|검토|판단|처분|결론|의견|문제점)"
+# 제목 뒤에 붙는 괄호 처분태그(예: "(권고)", "(“현지시정”)")
+_DISPO_PAREN = (r"[(（]\s*[“\"']?\s*(?:현지시정|현지조치|기관경고|기관주의|주의|통보|"
+                r"개선요구|개선|시정|권고|경고|징계|문책|재심의|변상|환수|회수|고발|신분|재정)"
+                r"\s*[”\"']?\s*[)）]")
+STOP = "|".join(_STOP_WORDS) + "|" + _NUM_SECTION + "|" + _DISPO_PAREN
+
 TITLE_RE = re.compile(r"제\s*목\s*[:：]?\s*(.+?)\s*(?:" + STOP + r"|$)")
-FINDING_SUFFIX = r"미흡|부적정|소홀|과다|누락|위반|지연|부당|미이행|불합리|부실|미비|초과|오류|불철저|방만|불투명"
-FINDING_RE = re.compile(r"([가-힣A-Za-z0-9()\-·「」『』\s]{4,40}?(?:" + FINDING_SUFFIX + r"))")
+# 문자열 앞머리를 경계 신호 직전까지 잘라내는 용도(라벨 없는 줄에도 적용)
+CUT_RE = re.compile(r"^(.+?)\s*(?:" + STOP + r")")
+# 지적 어미 집합(오탐 방지를 위해 선별적으로 유지)
+FINDING_SUFFIX = (r"미흡|부적정|소홀|과다|누락|위반|지연|부당|미이행|불합리|부실|미비|"
+                  r"초과|오류|불철저|방만|불투명")
+FINDING_RE = re.compile(r"([가-힣A-Za-z0-9()\-·「」『』\s]{4,45}?(?:" + FINDING_SUFFIX + r"))")
+
+# 제목으로 부적절한 표지/행정/페이지 텍스트
+_REJECT = [
+    re.compile(r"^\s*[-–]?\s*\d+\s*[-–]?\s*$"),                       # 페이지 번호 "- 1 -"
+    re.compile(r"^\d{1,4}\s*년?도?\s*(?:상반기|하반기|\d분기)?\s*"
+               r"(?:정기|종합|특정|복무|성과|재무|일상|특별)?\s*감사"
+               r"(?:\s*(?:사안별)?\s*감사?\s*결과)?\s*$"),            # 표지 "2016년도 정기감사 사안별 감사결과"
+    re.compile(r"^(?:목\s*차|감사대상|감사결과보고서?|상임이사|이사장|사\s*장|"
+               r"감사결과\s*처분요구서?|처분요구서|결과보고|감\s*사\s*결\s*과)\s*$"),
+    re.compile(r"^\S*[팀실과부처]\s*[-–]\s*\d+"),                     # 문서번호 "감사팀-1229"
+    re.compile(r"^\S{1,3}\s*[-–]\s*\d+\s*$"),                         # 짧은 코드 "가-12"
+    re.compile(r"^감\s*사\s*(?:기간|대상|기관|반|일자|일정|목적|범위|"
+               r"중점|연혁|근거|방법|기\s*간|담당)"),                 # 감사서식 행정줄 "감사기간 : ..."
+    re.compile(r"(?:결과\s*보고서?|처분요구서|계획서)\s*$"),          # 표지 "특별감사 결과보고서"
+    re.compile(r"상위\s*버전의?\s*배포용|한글\s*전용\s*뷰어"),        # 한글 배포용 문서 경고문
+    re.compile(r"^[\W_]+$"),                                          # 기호만
+]
+
+# 앞뒤에서 벗겨낼 장식 기호(열림/닫힘 괄호 양쪽 모두 포함)
+_EDGE = " .,:：;·∙・-–_〔〕【】「」『』（）()[]{}<>▷▪‣□○◯●■※\t　"
+
+def _reject(t):
+    return any(rx.match(t) for rx in _REJECT)
+
+def _clean(t):
+    """앞뒤 장식·잔여 기호·바이너리 잡토큰 제거."""
+    if not t:
+        return ""
+    # 라틴+숫자 잡토큰(OCR/서식 아티팩트) 제거: 예) INSIDabcdef_:MS_0001
+    t = re.sub(r"[A-Za-z]{4,}[A-Za-z0-9_:]*\d[A-Za-z0-9_:]*", " ", t)
+    # 반복 기호 마스킹(♤♤♤, @@@, ☆☆☆, ###, ···) 축약
+    t = re.sub(r"([@#♤☆★○◯●□■▷▪※·∙・\-–_=]){2,}", " ", t)
+    # 앞쪽 열거·불릿 제거: 가. / 1) / □ / ○ / ▷ / 【 / 「 등
+    t = re.sub(r"^\s*(?:[가-힣]\.\s*|\d+\s*[.)]\s*|[□○◯●▷▪※·∙‣∎【「『（(\[〔]\s*)+", "", t)
+    # 앞뒤 장식 기호 제거
+    t = t.strip(_EDGE)
+    # 내부 다중 공백 정리
+    t = re.sub(r"\s{2,}", " ", t).strip()
+    return t
+
+def _good(t, lo=4, hi=60):
+    return bool(t) and lo <= len(t) <= hi and not _reject(t)
 
 def extract_title(text):
     if not text:
         return ""
     norm = re.sub(r"\s+", " ", text).strip()
+
+    # 1) "제목:" 라벨 → 경계까지 캡처 후 정제
     m = TITLE_RE.search(norm)
     if m:
-        t = m.group(1).strip(" .:：]})")
-        if 2 <= len(t) <= 200:
+        t = _clean(m.group(1))
+        if _good(t):
             return t
-    # 지적제목 특유 어미로 핵심구 포착 (서술형 보고서 대응)
+        # 여전히 길면 앞부분에서 지적 핵심구(어미) 추출
+        if t:
+            fm = FINDING_RE.search(t)
+            if fm:
+                ft = _clean(fm.group(1))
+                if _good(ft):
+                    return ft
+            # 어미가 없으면 경계 앞 60자로 절단(단어 경계 우선)
+            head = t[:60]
+            cut = head.rsplit(" ", 1)[0] if len(t) > 60 and " " in head else head
+            cut = _clean(cut)
+            if _good(cut):
+                return cut
+
+    # 2) 본문에서 지적 어미로 끝나는 핵심구(서술형 보고서 대응)
     m2 = FINDING_RE.search(norm)
     if m2:
-        t = re.sub(r"^[가-힣]\.\s*|^\d+[).]\s*|^[□○◯▷▪·]\s*", "", m2.group(1)).strip()
-        if 4 <= len(t) <= 60:
+        t = _clean(m2.group(1))
+        if _good(t):
             return t
-    # 제목 라벨이 없으면 첫 의미있는 줄
+
+    # 3) 표지/페이지/행정 줄을 걸러낸 첫 의미 있는 줄(경계 신호에서 잘라 표/처분태그 꼬리 제거)
     for line in text.splitlines():
-        s = re.sub(r"\s+", " ", line).strip(" .:：]}")
-        if len(s) >= 4 and "목 차" not in s:
-            return s[:60]
+        s = re.sub(r"\s+", " ", line).strip()
+        cm = CUT_RE.match(s)
+        if cm:
+            s = cm.group(1)
+        s = _clean(s)
+        if _good(s, lo=6, hi=60) and "목 차" not in s:
+            return s
     return ""
 
 # ----- PDF -----
